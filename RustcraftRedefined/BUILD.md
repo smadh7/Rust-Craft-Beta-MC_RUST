@@ -29,3 +29,12 @@ For gameplay and save-format tests (assertions must remain enabled):
     ./gameplay-test
 
 The game modes, damage, persistence, menu, and migration need end-to-end Windows testing; native unit tests do not establish parity or gameplay correctness.
+
+For visual-effect math and water meshing tests (keep assertions enabled):
+
+    g++ -O3 -ffast-math -std=c++17 tests/visual_effects_test.cpp -o visual-effects-test
+    ./visual-effects-test
+    g++ -O3 -ffast-math -std=c++17 cpp/vccore.cpp tests/water_mesh_test.cpp -o water-mesh-test
+    ./water-mesh-test
+
+The animated surface, particles, profile transitions and mining overlay still need visual testing on Windows and representative GPUs.

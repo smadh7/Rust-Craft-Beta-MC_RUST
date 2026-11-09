@@ -14,9 +14,9 @@ The terrain generator changed when trees and climate regions were added. Existin
 
 ## Graphics presets
 
-Choose F1–F4: Potato / Basic (2-chunk radius, flat sky), Normal (3, gradient and sun), High (4, gradient, sun and simple clouds), or Very High / Peak (5, gradient, sun and simple clouds). All presets use original procedural textures, face shading and distance fog. Larger view distances can reduce performance. Graphics and skin settings are remembered when storage is available.
+Choose F1–F4: Potato / Basic (2-chunk radius, flat sky), Normal (3, gradient and sun), High (4, gradient, sun and simple clouds), or Very High / Peak (5, a warm sunset palette, soft cloud shapes and animated water surfaces). All presets use original procedural textures, face shading and distance fog. Block breaks emit particles; Survival and Hardcore show progressive cracks while mining. Preset changes rebuild chunk visuals incrementally, so the colour change may take a moment. Larger view distances and Peak's water tessellation can reduce performance. Graphics and skin settings are remembered when storage is available.
 
-These are modest fixed-function graphics improvements, **not** a modern shader pipeline: Peak does not yet resemble the supplied reference images. There are no reflections, dynamic shadows, bloom, realistic water, volumetric lighting or advanced post-processing. Achieving that look requires substantial rendering work and Windows/GPU testing.
+Peak's water waves displace the rendered top surface only: fluid flow, collision and swimming still use static water blocks. Its glints and sunset glow are simple visual approximations. These remain fixed-function graphics improvements, **not** a modern shader pipeline: Peak does not yet match the supplied reference images. There are no actual reflections, dynamic shadows, post-process bloom, volumetric lighting or realistic water physics. Achieving that look requires substantial rendering work and Windows/GPU testing.
 
 ## Limitations and roadmap
 

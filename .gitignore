@@ -5,3 +5,5 @@ client.lib
 RustcraftRedefined/interaction-test
 RustcraftRedefined/world-menu-test
 RustcraftRedefined/gameplay-test
+RustcraftRedefined/visual-effects-test
+RustcraftRedefined/water-mesh-test
