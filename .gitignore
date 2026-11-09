@@ -1,0 +1,6 @@
+RustcraftRedefined/target/
+RustcraftRedefined/core-test
+*.pdb
+client.lib
+RustcraftRedefined/interaction-test
+RustcraftRedefined/world-menu-test
