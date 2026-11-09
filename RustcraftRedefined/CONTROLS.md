@@ -7,6 +7,7 @@ At startup, choose graphics, a hand style, and a mode for a new world. Select an
 - In flight, hold Space to rise and Shift to descend. Hold Control to move faster.
 - Left click: break a targeted block. In Survival and Hardcore, hold it to mine and watch the cracks grow. Right click: place the selected block against the targeted face.
 - Number keys 1–9 or mouse wheel: select a hotbar block.
+- Press **E** while playing to choose a block for the currently selected hotbar slot. Pick an entry and click **Assign to slot** (or double-click it), then click the game window to resume. In Survival and Hardcore, you can assign an empty block type but must collect it before placing it. Assignments are saved with your world.
 - F1: Potato / Basic; F2: Normal; F3: High; F4: Very High / Peak. The active preset appears in the window title and is remembered when local settings can be saved.
 - Close the window normally to exit. Edits are also saved after each change when a user data directory is available.
 

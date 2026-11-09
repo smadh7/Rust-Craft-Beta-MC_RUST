@@ -38,3 +38,10 @@ For visual-effect math and water meshing tests (keep assertions enabled):
     ./water-mesh-test
 
 The animated surface, particles, profile transitions and mining overlay still need visual testing on Windows and representative GPUs.
+
+For indexed edit-store, save-record reconstruction, frustum safety and synthetic lookup benchmarks (assertions enabled):
+
+    g++ -O3 -ffast-math -std=c++17 tests/performance_test.cpp -o performance-test
+    ./performance-test
+
+The lookup timings are a synthetic CPU microbenchmark, not a measurement of frame rate or a comparison with another game. The inventory picker, save migration and culling must still be tested in the Windows client.

@@ -10,7 +10,7 @@ This is a clean-room feature comparison, not copied source or assets. The 26.2 r
 
 ## Work still needed
 
-1. A real inventory, item stacks, drops, item pickup, tools, durability, recipes, crafting interface and additional blocks.
+1. A full inventory (the current E-key picker only assigns blocks to the hotbar), item stacks, drops, item pickup, tools, durability, recipes, crafting interface and additional blocks.
 2. Enemies, passive creatures, combat, difficulty, meaningful food sources, proper healing and environmental hazards.
 3. Reliable death screens, spawn points, hardcore spectator behavior and robust crash recovery.
 4. Caves, additional biomes and dimensions, structures, day/night, lighting and sound.

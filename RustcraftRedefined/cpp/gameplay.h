@@ -9,6 +9,7 @@ struct PlayerState {
     uint8_t health=20, hunger=20, selected=0;
     bool dead=false, has_position=false;
     uint16_t blocks[14]={};
+    uint8_t hotbar[9]={1,2,3,4,6,8,10,12,13};
     uint16_t berries=0;
     double x=8,y=48,z=8;
 };

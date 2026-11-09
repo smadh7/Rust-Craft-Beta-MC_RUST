@@ -10,12 +10,15 @@ int main(){
     p.berries=1;p.hunger=18;assert(eat_berries(p));assert(p.hunger==20&&p.berries==0);assert(!eat_berries(p));
     assert(!damage(p,4)&&p.health==16);assert(damage(p,100)&&p.health==0&&!p.dead);respawn(p);assert(p.health==20&&p.blocks[8]==0);
     p.mode=HARDCORE;assert(damage(p,20)&&p.dead);respawn(p);assert(p.dead);
-    p.has_position=true;p.x=-32.5;p.y=60;p.z=44.5;p.selected=2;p.blocks[4]=15;p.berries=7;
-    unsigned char data[64];encode_player(data,p);PlayerState q;assert(decode_player(data,q));assert(q.mode==HARDCORE&&q.dead&&q.x==-32.5&&q.blocks[4]==15&&q.berries==7);
+    p.has_position=true;p.x=-32.5;p.y=60;p.z=44.5;p.selected=2;p.blocks[4]=15;p.berries=7;p.hotbar[0]=7;p.hotbar[8]=5;
+    unsigned char data[64];encode_player(data,p);PlayerState q;assert(decode_player(data,q));assert(q.mode==HARDCORE&&q.dead&&q.x==-32.5&&q.blocks[4]==15&&q.berries==7&&q.hotbar[0]==7&&q.hotbar[8]==5);
     data[0]=99;assert(!decode_player(data,q));encode_player(data,p);data[4]=9;assert(!decode_player(data,q));
+    encode_player(data,p);data[4]&=15;for(int i=60;i<64;i++)data[i]=0;assert(decode_player(data,q)&&q.hotbar[0]==1&&q.hotbar[8]==13); // legacy v2
+    encode_player(data,p);data[60]=9;assert(!decode_player(data,q));
     p.dead=false;p.health=20;p.x=std::numeric_limits<double>::quiet_NaN();encode_player(data,p);assert(!decode_player(data,q));
     unsigned char header[20];uint64_t seed;uint32_t count;bool v2=false;encode_world_header(header,42,2,true);
     assert(decode_world_header(header,110,seed,count,&v2)&&v2&&seed==42&&count==2);assert(!decode_world_header(header,109,seed,count,&v2));
+    memcpy(header,"RCRSAVE2",8);assert(decode_world_header(header,110,seed,count,&v2)&&v2);
     encode_world_header(header,42,0);assert(decode_world_header(header,20,seed,count,&v2)&&!v2);
     puts("PASS mode rules, inventory, crafting, food, death, legacy and versioned saves");
 }
