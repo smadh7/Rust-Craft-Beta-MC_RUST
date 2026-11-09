@@ -1,0 +1,4 @@
+RustcraftRedefined/target/
+RustcraftRedefined/core-test
+*.pdb
+client.lib
