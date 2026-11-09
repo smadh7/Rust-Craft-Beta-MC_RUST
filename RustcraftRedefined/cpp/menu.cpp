@@ -7,10 +7,11 @@
 
 namespace {
 const wchar_t* graphics_names[]={L"Potato / Basic",L"Normal",L"High",L"Very High / Peak"};
+const wchar_t* mode_names[]={L"Creative (prototype)",L"Survival (prototype)",L"Hardcore (prototype)"};
 const wchar_t* skin_names[]={L"Explorer - warm",L"Explorer - deep",L"Explorer - light",L"Explorer - cool"};
-enum { LIST=100, WORLD_NAME, SEED, GRAPHICS, SKIN, CREATE_WORLD, PLAY_WORLD, QUICK_PLAY };
+enum { LIST=100, WORLD_NAME, SEED, GRAPHICS, SKIN, MODE, CREATE_WORLD, PLAY_WORLD, QUICK_PLAY };
 struct Menu {
-    HWND window=nullptr,list=nullptr,name=nullptr,seed=nullptr,graphics=nullptr,skin=nullptr;
+    HWND window=nullptr,list=nullptr,name=nullptr,seed=nullptr,graphics=nullptr,skin=nullptr,mode=nullptr;
     HINSTANCE instance=nullptr; int dpi=96; bool done=false;
     std::wstring worlds; MenuResult result;
 };
@@ -32,16 +33,19 @@ void load_preferences(MenuResult& state){
     if(fread(magic,1,8,f)==8&&memcmp(magic,"RCRCFG01",8)==0&&fread(values,1,2,f)==2&&values[0]<4&&values[1]<4){state.graphics=values[0];state.skin=values[1];}
     fclose(f);
 }
-bool read_world_header(const std::wstring& path,uint64_t& seed){
+bool read_world_header(const std::wstring& path,uint64_t& seed,GameMode* mode=nullptr,bool* dead=nullptr){
     HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);if(f==INVALID_HANDLE_VALUE)return false;
     unsigned char header[20];DWORD read=0;LARGE_INTEGER length;bool ok=ReadFile(f,header,sizeof header,&read,nullptr)&&read==sizeof header&&GetFileSizeEx(f,&length);
-    if(ok){uint32_t count;ok=decode_world_header(header,length.QuadPart,seed,count);}
+    bool v2=false;uint32_t count;if(ok)ok=decode_world_header(header,length.QuadPart,seed,count,&v2);
+    PlayerState player;if(ok&&v2){unsigned char bytes[64];DWORD n=0;ok=ReadFile(f,bytes,64,&n,nullptr)&&n==64&&decode_player(bytes,player);}
+    if(ok&&mode)*mode=player.mode;if(ok&&dead)*dead=player.dead;
     CloseHandle(f);return ok;
 }
-bool create_empty_world(const std::wstring& path,uint64_t seed){
+bool create_empty_world(const std::wstring& path,uint64_t seed,GameMode mode){
     HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);if(f==INVALID_HANDLE_VALUE)return false;
-    unsigned char header[20];encode_world_header(header,seed,0);
+    unsigned char header[20];encode_world_header(header,seed,0,true);PlayerState player;player.mode=mode;unsigned char state[64];encode_player(state,player);
     DWORD wrote=0;bool ok=WriteFile(f,header,sizeof header,&wrote,nullptr)&&wrote==sizeof header;
+    if(ok)ok=WriteFile(f,state,sizeof state,&wrote,nullptr)&&wrote==sizeof state;
     if(!CloseHandle(f))ok=false;if(!ok)DeleteFileW(path.c_str());return ok;
 }
 void populate_list(Menu* m){
@@ -64,8 +68,8 @@ void apply_selection(Menu* m){
 }
 bool input_seed(Menu*m,uint64_t& seed){wchar_t text[32];GetWindowTextW(m->seed,text,32);if(parse_world_seed(text,seed))return true;
     MessageBoxW(m->window,L"Enter a whole-number seed from 0 to 18446744073709551615.",L"Invalid seed",MB_OK|MB_ICONWARNING);return false;}
-void launch(Menu*m,const std::wstring& path,const std::wstring& name,uint64_t seed){
-    m->result.save_path=path;m->result.world_name=name;m->result.seed=seed;apply_selection(m);m->result.start=true;DestroyWindow(m->window);
+void launch(Menu*m,const std::wstring& path,const std::wstring& name,uint64_t seed,GameMode mode){
+    m->result.save_path=path;m->result.world_name=name;m->result.seed=seed;m->result.mode=mode;apply_selection(m);m->result.start=true;DestroyWindow(m->window);
 }
 LRESULT CALLBACK menu_proc(HWND h,UINT msg,WPARAM w,LPARAM l){
     Menu* m=(Menu*)GetWindowLongPtrW(h,GWLP_USERDATA);
@@ -83,6 +87,9 @@ LRESULT CALLBACK menu_proc(HWND h,UINT msg,WPARAM w,LPARAM l){
         control(m,L"STATIC",L"Seed (whole number)",SS_LEFT,315,142,240,20);
         m->seed=control(m,L"EDIT",L"12345",ES_AUTOHSCROLL|WS_TABSTOP,315,165,245,26,SEED,WS_EX_CLIENTEDGE);SendMessageW(m->seed,EM_SETLIMITTEXT,21,0);
         control(m,L"BUTTON",L"Create world & play",BS_PUSHBUTTON|WS_TABSTOP,315,203,245,32,CREATE_WORLD);
+        control(m,L"STATIC",L"New world mode",SS_LEFT,315,245,240,20);
+        m->mode=control(m,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,315,267,245,120,MODE);
+        for(const auto* text:mode_names)SendMessageW(m->mode,CB_ADDSTRING,0,(LPARAM)text);SendMessageW(m->mode,CB_SETCURSEL,SURVIVAL,0);
         control(m,L"STATIC",L"Graphics",SS_LEFT,24,345,140,20);
         m->graphics=control(m,L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,24,368,260,150,GRAPHICS);
         for(const auto* text:graphics_names)SendMessageW(m->graphics,CB_ADDSTRING,0,(LPARAM)text);SendMessageW(m->graphics,CB_SETCURSEL,m->result.graphics,0);
@@ -96,16 +103,19 @@ LRESULT CALLBACK menu_proc(HWND h,UINT msg,WPARAM w,LPARAM l){
     case WM_COMMAND:{int id=LOWORD(w),notification=HIWORD(w);
         if(id==CREATE_WORLD&&notification==BN_CLICKED){wchar_t name[42];GetWindowTextW(m->name,name,42);std::wstring n=name;uint64_t seed;
             if(!valid_world_name(n)){MessageBoxW(h,L"Use 1–40 letters, numbers, spaces, hyphens or underscores. Avoid leading or trailing spaces and reserved device names.",L"Invalid world name",MB_OK|MB_ICONWARNING);return 0;}
-            if(!input_seed(m,seed))return 0;std::wstring path=m->worlds+L"\\"+n+L".world";
-            if(!create_empty_world(path,seed)){MessageBoxW(h,L"Could not create this world. The name may already exist, or the folder may not be writable.",L"World not created",MB_OK|MB_ICONERROR);return 0;}
-            launch(m,path,n,seed);return 0;}
+            if(!input_seed(m,seed))return 0;int chosen=(int)SendMessageW(m->mode,CB_GETCURSEL,0,0);GameMode mode=chosen>=0&&chosen<=2?(GameMode)chosen:SURVIVAL;std::wstring path=m->worlds+L"\\"+n+L".world";
+            if(!create_empty_world(path,seed,mode)){MessageBoxW(h,L"Could not create this world. The name may already exist, or the folder may not be writable.",L"World not created",MB_OK|MB_ICONERROR);return 0;}
+            launch(m,path,n,seed,mode);return 0;}
         if((id==PLAY_WORLD&&notification==BN_CLICKED)||(id==LIST&&notification==LBN_DBLCLK)){
             LRESULT index=SendMessageW(m->list,LB_GETCURSEL,0,0);if(index==LB_ERR){MessageBoxW(h,L"Select a world first, or create one.",L"Choose a world",MB_OK|MB_ICONINFORMATION);return 0;}
             wchar_t name[41];if(SendMessageW(m->list,LB_GETTEXT,index,(LPARAM)name)==LB_ERR)return 0;
-            std::wstring path=m->worlds+L"\\"+name+L".world";uint64_t seed;
-            if(!read_world_header(path,seed)){MessageBoxW(h,L"This world could not be read or may be damaged. It has not been changed.",L"Unable to open world",MB_OK|MB_ICONERROR);return 0;}
-            launch(m,path,name,seed);return 0;}
-        if(id==QUICK_PLAY&&notification==BN_CLICKED){uint64_t seed;if(input_seed(m,seed))launch(m,L"",L"Quick play (unsaved)",seed);return 0;}
+            std::wstring path=m->worlds+L"\\"+name+L".world";uint64_t seed;GameMode mode;bool dead=false;
+            if(!read_world_header(path,seed,&mode,&dead)){MessageBoxW(h,L"This world could not be read or may be damaged. It has not been changed.",L"Unable to open world",MB_OK|MB_ICONERROR);return 0;}
+            if(dead){MessageBoxW(h,L"This Hardcore world has ended after your death. Its save is kept, but it cannot be reopened for play.",L"Hardcore world ended",MB_OK|MB_ICONINFORMATION);return 0;}
+            launch(m,path,name,seed,mode);return 0;}
+        if(id==QUICK_PLAY&&notification==BN_CLICKED){uint64_t seed;int chosen=(int)SendMessageW(m->mode,CB_GETCURSEL,0,0);GameMode mode=chosen>=0&&chosen<=2?(GameMode)chosen:SURVIVAL;
+            if(mode==HARDCORE){MessageBoxW(h,L"Hardcore requires a saved world so its one-life state can be stored.",L"Choose a saved world",MB_OK|MB_ICONINFORMATION);return 0;}
+            if(input_seed(m,seed))launch(m,L"",L"Quick play (unsaved)",seed,mode);return 0;}
         return 0;}
     case WM_CLOSE:DestroyWindow(h);return 0;
     case WM_DESTROY:m->done=true;return 0;

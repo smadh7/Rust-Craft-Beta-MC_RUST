@@ -4,3 +4,4 @@ RustcraftRedefined/core-test
 client.lib
 RustcraftRedefined/interaction-test
 RustcraftRedefined/world-menu-test
+RustcraftRedefined/gameplay-test

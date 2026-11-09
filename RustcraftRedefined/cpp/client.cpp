@@ -13,6 +13,7 @@
 #include <algorithm>
 #include "interaction.h"
 #include "menu.h"
+#include "world_format.h"
 
 extern "C" void vc_generate_chunk(int32_t,int32_t,uint64_t,uint8_t*);
 extern "C" int32_t vc_terrain_height(int32_t,int32_t,uint64_t);
@@ -27,15 +28,17 @@ struct Pos { int x,y,z; bool operator==(const Pos& b)const{return x==b.x&&y==b.y
 struct PosHash { size_t operator()(const Pos&p) const { return ((uint64_t)(uint32_t)p.x*0x9e3779b1u)^((uint64_t)(uint32_t)p.z*0x85ebca77u)^((uint64_t)(uint32_t)p.y*0xc2b2ae3du); } };
 static std::unordered_map<Pos,uint8_t,PosHash> edits;
 static std::wstring savepath;
+static PlayerState player;
+static bool legacy_needs_backup=false;
 struct Chunk { int x,z; uint8_t b[16384]; GLuint opaque=0, trans=0; };
 static std::vector<Chunk*> chunks;
 static HWND window; static HDC dc; static HGLRC context;
 static bool running=true,captured=false,fly=false,previous_space=false,previous_l=false,previous_r=false,previous_escape=false;
 static int selected=0,wheel=0,width=1024,height=720;
 static GLuint textures[15]={};
-static const uint8_t hotbar[9]={1,2,3,4,7,8,10,12,13};
+static const uint8_t hotbar[9]={1,2,3,4,6,8,10,12,13};
 static double px=8,py=48,pz=8,vy=0; static float yaw=0,pitch=0; static double last_space=-5;
-static int div16(int v){return v>=0?v/16:-((15-v)/16);} static int local16(int v){return v-div16(v)*16;}
+static int div16(int v){int q=v/16;return q-(v%16<0);} static int local16(int v){return v-div16(v)*16;}
 static int idx(int x,int y,int z){return (y*16+z)*16+x;}
 static int pidx(int x,int y,int z){return (y*18+z)*18+x;}
 static Chunk* findchunk(int x,int z){for(auto c:chunks)if(c->x==x&&c->z==z)return c;return nullptr;}
@@ -107,37 +110,89 @@ static void stream(){int cx=div16((int)floor(px)),cz=div16((int)floor(pz));int r
 static bool load_world(){
     if(savepath.empty())return true;
     FILE*f=_wfopen(savepath.c_str(),L"rb");if(!f)return false;
-    char magic[8];uint64_t seed;uint32_t count;bool ok=fread(magic,1,8,f)==8&&!memcmp(magic,"RCRSAVE1",8)&&fread(&seed,8,1,f)==1&&seed==SEED&&fread(&count,4,1,f)==1&&count<=1000000;
+    unsigned char header[20];uint64_t seed;uint32_t count;bool v2=false;
+    bool ok=_fseeki64(f,0,SEEK_END)==0;int64_t length=ok?_ftelli64(f):-1;if(ok)ok=_fseeki64(f,0,SEEK_SET)==0;
+    ok=ok&&fread(header,1,20,f)==20&&decode_world_header(header,length,seed,count,&v2)&&seed==SEED;
+    PlayerState loaded_player;
+    if(ok&&v2){unsigned char state[64];ok=fread(state,1,64,f)==64&&decode_player(state,loaded_player)&&!loaded_player.dead;}
     std::unordered_map<Pos,uint8_t,PosHash> loaded;
     if(ok)for(uint32_t i=0;i<count;i++){int32_t v[3];uint8_t b;if(fread(v,4,3,f)!=3||fread(&b,1,1,f)!=1||v[1]<0||v[1]>=64||b>13){ok=false;break;}loaded[{v[0],v[1],v[2]}]=b;}
     if(ok&&fgetc(f)!=EOF)ok=false;if(ferror(f))ok=false;fclose(f);
-    if(ok)edits.swap(loaded);return ok;
+    if(ok){edits.swap(loaded);player=loaded_player;legacy_needs_backup=!v2;}return ok;
 }
 static bool save(){
     if(savepath.empty())return true;
     if(edits.size()>1000000)return false;
-    std::wstring tmp=savepath+L".tmp";FILE*f=_wfopen(tmp.c_str(),L"wb");if(!f)return false;uint32_t count=(uint32_t)edits.size();bool ok=fwrite("RCRSAVE1",1,8,f)==8&&fwrite(&SEED,8,1,f)==1&&fwrite(&count,4,1,f)==1;
+    if(legacy_needs_backup){std::wstring backup=savepath+L".v1-backup";
+        if(GetFileAttributesW(backup.c_str())==INVALID_FILE_ATTRIBUTES&&!CopyFileW(savepath.c_str(),backup.c_str(),TRUE))return false;
+        legacy_needs_backup=false;
+    }
+    std::wstring tmp=savepath+L".tmp";FILE*f=_wfopen(tmp.c_str(),L"wb");if(!f)return false;
+    player.selected=(uint8_t)selected;player.has_position=true;player.x=px;player.y=py;player.z=pz;
+    unsigned char header[20],state[64];encode_world_header(header,SEED,(uint32_t)edits.size(),true);encode_player(state,player);
+    bool ok=fwrite(header,1,20,f)==20&&fwrite(state,1,64,f)==64;
     for(const auto&e:edits){int32_t v[3]={e.first.x,e.first.y,e.first.z};ok=ok&&fwrite(v,4,3,f)==3&&fwrite(&e.second,1,1,f)==1;}
     if(fclose(f)!=0)ok=false;if(!ok){DeleteFileW(tmp.c_str());return false;}
     return MoveFileExW(tmp.c_str(),savepath.c_str(),MOVEFILE_REPLACE_EXISTING)!=0;
 }
 static void save_with_warning(){static bool warned=false;if(!save()&&!warned){warned=true;MessageBoxW(window,L"The world could not be saved. Your latest edits may be lost. Check that your user data folder is writable.",L"Save error",MB_OK|MB_ICONWARNING);}}
-static void setblock(int x,int y,int z,uint8_t id){if(y<=0||y>=64)return;Chunk*c=findchunk(div16(x),div16(z));if(!c)return;c->b[idx(local16(x),y,local16(z))]=id;edits[{x,y,z}]=id;remesh(c); if(local16(x)==0){Chunk*n=findchunk(c->x-1,c->z);if(n)remesh(n);} if(local16(x)==15){Chunk*n=findchunk(c->x+1,c->z);if(n)remesh(n);} if(local16(z)==0){Chunk*n=findchunk(c->x,c->z-1);if(n)remesh(n);} if(local16(z)==15){Chunk*n=findchunk(c->x,c->z+1);if(n)remesh(n);}save_with_warning();}
+static void setblock(int x,int y,int z,uint8_t id){if(y<=0||y>=64)return;Chunk*c=findchunk(div16(x),div16(z));if(!c)return;c->b[idx(local16(x),y,local16(z))]=id;edits[{x,y,z}]=id;remesh(c); if(local16(x)==0){Chunk*n=findchunk(c->x-1,c->z);if(n)remesh(n);} if(local16(x)==15){Chunk*n=findchunk(c->x+1,c->z);if(n)remesh(n);} if(local16(z)==0){Chunk*n=findchunk(c->x,c->z-1);if(n)remesh(n);} if(local16(z)==15){Chunk*n=findchunk(c->x,c->z+1);if(n)remesh(n);}}
 static bool collides(double x,double y,double z){for(int X=(int)floor(x-.3);X<=(int)floor(x+.3);X++)for(int Y=(int)floor(y);Y<=(int)floor(y+1.79);Y++)for(int Z=(int)floor(z-.3);Z<=(int)floor(z+.3);Z++)if((Y>=0&&Y<64&&!findchunk(div16(X),div16(Z)))||solid(block(X,Y,Z)))return true;return false;}
 static RayHit ray(){return trace_ray(px,py+1.62,pz,view_direction(yaw,pitch),6.0,[](int x,int y,int z){return block(x,y,z);});}
 static void capture(bool on){captured=on; if(on){SetCapture(window);RECT r;GetClientRect(window,&r);POINT p={(r.right-r.left)/2,(r.bottom-r.top)/2};ClientToScreen(window,&p);SetCursorPos(p.x,p.y);while(ShowCursor(FALSE)>=0){} }else{ReleaseCapture();while(ShowCursor(TRUE)<0){}}}
 static LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){switch(msg){case WM_CLOSE:running=false;return 0;case WM_DESTROY:running=false;return 0;case WM_SIZE:width=LOWORD(l);height=HIWORD(l);return 0;case WM_MOUSEWHEEL:wheel+=(GET_WHEEL_DELTA_WPARAM(w)>0?1:-1);return 0;case WM_LBUTTONDOWN:if(!captured){capture(true);previous_l=true;}return 0;case WM_KILLFOCUS:if(captured)capture(false);return 0;}return DefWindowProcW(h,msg,w,l);}
 static bool key(int k){return (GetAsyncKeyState(k)&0x8000)!=0;}
-static void input(double dt,double now){bool esc=key(VK_ESCAPE);if(esc&&!previous_escape&&captured)capture(false);previous_escape=esc;
+static void spawn_player(){
+    uint8_t terrain[16384];populate(0,0,terrain);int top=0;
+    for(int y=63;y>=0;y--)if(solid(terrain[idx(8,y,8)])){top=y;break;}
+    px=8.5;pz=8.5;py=top+1.01;vy=0;
+}
+static void take_damage(int amount){
+    if(!limited(player)||amount<=0)return;
+    bool died=damage(player,amount);
+    if(died){
+        if(player.mode==HARDCORE){save_with_warning();running=false;if(captured)capture(false);MessageBoxW(window,L"Your Hardcore run has ended. This world is kept but cannot be played again.",L"Hardcore",MB_OK|MB_ICONINFORMATION);return;}
+        respawn(player);spawn_player();fly=false;save_with_warning();if(captured)capture(false);MessageBoxW(window,L"You died and returned to spawn. Your collected items were lost.",L"Survival",MB_OK|MB_ICONINFORMATION);
+    } else save_with_warning();
+}
+static void input(double dt,double now){
+    static bool prev_c=false,prev_f=false;static double mining=0,exhaustion=0,starve=0,heal=0,autosave=0,air=15,drown=0;
+    static int bx=0,by=0,bz=0;
+    bool esc=key(VK_ESCAPE);if(esc&&!previous_escape&&captured)capture(false);previous_escape=esc;
     for(int i=0;i<4;i++)if(key(VK_F1+i))graphics=i;
-    if(!captured)return;RECT r;GetClientRect(window,&r);POINT p={(r.right-r.left)/2,(r.bottom-r.top)/2};ClientToScreen(window,&p);POINT cur;GetCursorPos(&cur);yaw-=(cur.x-p.x)*.12f;pitch-=(cur.y-p.y)*.12f;pitch=std::max(-89.f,std::min(89.f,pitch));SetCursorPos(p.x,p.y);
-    bool space=key(VK_SPACE);bool ground=collides(px,py-.06,pz);if(space&&!previous_space){if(now-last_space<.3){fly=!fly;vy=0;}else if(ground&&!fly)vy=8;last_space=now;}previous_space=space;
+    if(!captured){mining=0;return;}
+    RECT r;GetClientRect(window,&r);POINT p={(r.right-r.left)/2,(r.bottom-r.top)/2};ClientToScreen(window,&p);POINT cur;GetCursorPos(&cur);yaw-=(cur.x-p.x)*.12f;pitch-=(cur.y-p.y)*.12f;pitch=std::max(-89.f,std::min(89.f,pitch));SetCursorPos(p.x,p.y);
+    bool space=key(VK_SPACE);bool ground=collides(px,py-.06,pz);
+    if(space&&!previous_space){if(!limited(player)&&now-last_space<.3){fly=!fly;vy=0;}else if(ground&&!fly)vy=8;last_space=now;}previous_space=space;
     for(int i=0;i<9;i++)if(key('1'+i))selected=i;if(wheel){selected=(selected-wheel%9+9)%9;wheel=0;}
+    bool c=key('C'),f=key('F');if(c&&!prev_c&&craft_planks(player))save_with_warning();if(f&&!prev_f&&eat_berries(player))save_with_warning();prev_c=c;prev_f=f;
     double forward=(key('W')?1:0)-(key('S')?1:0),side=(key('D')?1:0)-(key('A')?1:0),len=sqrt(forward*forward+side*side);if(len>0){forward/=len;side/=len;}
-    double angle=yaw*.0174532925, speed=(key(VK_CONTROL)?8:5)*dt;double dx=(-sin(angle)*forward+cos(angle)*side)*speed,dz=(-cos(angle)*forward-sin(angle)*side)*speed;
+    bool in_water=block((int)floor(px),(int)floor(py+1.0),(int)floor(pz))==5;
+    bool underwater=block((int)floor(px),(int)floor(py+1.62),(int)floor(pz))==5;
+    bool sprint=key(VK_CONTROL)&&(!limited(player)||player.hunger>6);double angle=yaw*.0174532925, speed=(sprint?8:5)*dt*(in_water?.55:1);double dx=(-sin(angle)*forward+cos(angle)*side)*speed,dz=(-cos(angle)*forward-sin(angle)*side)*speed;
     if(!collides(px+dx,py,pz))px+=dx;if(!collides(px,py,pz+dz))pz+=dz;
-    if(fly)vy=((space?1:0)-(key(VK_SHIFT)?1:0))*7;else vy=std::max(-30.0,vy-22*dt);double dy=vy*dt;int steps=std::max(1,(int)ceil(fabs(dy)/.1));for(int i=0;i<steps;i++){if(!collides(px,py+dy/steps,pz))py+=dy/steps;else{vy=0;break;}}
-    RayHit h=ray();bool l=key(VK_LBUTTON),rr=key(VK_RBUTTON);if(h.yes&&l&&!previous_l)setblock(h.x,h.y,h.z,0);if(h.yes&&h.has_previous&&rr&&!previous_r){int x=h.prevx,y=h.prevy,z=h.prevz;uint8_t target=block(x,y,z);if((target==0||target==5)&&placement_clear(px,py,pz,x,y,z))setblock(x,y,z,hotbar[selected]);}previous_l=l;previous_r=rr;
+    if(fly)vy=((space?1:0)-(key(VK_SHIFT)?1:0))*7;
+    else if(in_water){vy=std::max(-3.0,vy-5*dt);if(space)vy=4;if(key(VK_SHIFT))vy=-4;}
+    else vy=std::max(-30.0,vy-22*dt);double dy=vy*dt;int steps=std::max(1,(int)ceil(fabs(dy)/.1));
+    for(int i=0;i<steps;i++){if(!collides(px,py+dy/steps,pz))py+=dy/steps;else{double impact=vy;vy=0;if(dy<0&&impact<-12){take_damage((int)((-impact-12)/3)+1);if(!running||!captured)return;}break;}}
+    if(limited(player)){
+        if(underwater){air=std::max(0.0,air-dt);if(air<=0){drown+=dt;if(drown>=2){drown=0;take_damage(2);if(!running||!captured)return;}}}else{air=15;drown=0;}
+        exhaustion+=dt*(len>0?(sprint?.08:.02):.002);if(exhaustion>=1){exhaustion-=1;if(player.hunger)player.hunger--;}
+        if(player.hunger==0){starve+=dt;if(starve>=4){starve=0;take_damage(1);if(!running||!captured)return;}}else starve=0;
+        if(player.hunger>=18&&player.health<20){heal+=dt;if(heal>=8){heal=0;player.health++;player.hunger--;}}else heal=0;
+        autosave+=dt;if(autosave>=15){autosave=0;save_with_warning();}
+    }
+    RayHit h=ray();bool l=key(VK_LBUTTON),rr=key(VK_RBUTTON);
+    if(l&&h.yes&&h.y>0&&h.y<64&&findchunk(div16(h.x),div16(h.z))){
+        if(!previous_l||h.x!=bx||h.y!=by||h.z!=bz){mining=0;bx=h.x;by=h.y;bz=h.z;}
+        mining+=dt;uint8_t b=block(h.x,h.y,h.z);
+        if((!limited(player)&&!previous_l)||(limited(player)&&mining>=.65)){
+            if(harvest(player,b)){if(limited(player)&&b==7&&player.berries<999)player.berries++;setblock(h.x,h.y,h.z,0);save_with_warning();}mining=0;
+        }
+    } else mining=0;
+    if(h.yes&&h.has_previous&&rr&&!previous_r){int x=h.prevx,y=h.prevy,z=h.prevz;uint8_t target=block(x,y,z);
+        if(y>0&&y<64&&findchunk(div16(x),div16(z))&&(target==0||target==5)&&placement_clear(px,py,pz,x,y,z)&&consume_block(player,hotbar[selected])){setblock(x,y,z,hotbar[selected]);save_with_warning();}}
+    previous_l=l;previous_r=rr;
 }
 static void sky(){
     // Original gradient and sun, drawn before depth-tested world geometry.
@@ -173,6 +228,16 @@ static void clouds(){
     }
     glEnd();glDepthMask(GL_TRUE);glDisable(GL_BLEND);
 }
+static void box2(float x,float y,float w,float h){vertex(x,y,0);vertex(x+w,y,0);vertex(x+w,y+h,0);vertex(x,y+h,0);}
+static void draw_number(int value,float x,float y){
+    static const unsigned char masks[]={63,6,91,79,102,109,125,7,127,111};
+    char buf[4];snprintf(buf,sizeof buf,"%d",std::min(value,999));
+    glColor3f(1,1,1);glBegin(GL_QUADS);
+    for(int i=0;buf[i];i++){float X=x+i*7;unsigned m=masks[buf[i]-'0'];
+        if(m&1)box2(X+1,y,4,1);if(m&2)box2(X+5,y+1,1,4);if(m&4)box2(X+5,y+6,1,4);
+        if(m&8)box2(X+1,y+10,4,1);if(m&16)box2(X,y+6,1,4);if(m&32)box2(X,y+1,1,4);if(m&64)box2(X+1,y+5,4,1);
+    }glEnd();
+}
 static void render(){
     if(width<1||height<1)return;
     glViewport(0,0,width,height);glClearColor(.52f,.72f,.91f,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
@@ -195,14 +260,20 @@ static void render(){
         float x=(float)width-145,y=(float)height-150;glColor3fv(sleeves[skin]);glBegin(GL_QUADS);vertex(x+38,y+75,0);vertex(x+125,y+75,0);vertex(x+145,y+150,0);vertex(x+38,y+150,0);glEnd();
         glColor3fv(hands[skin]);glBegin(GL_QUADS);vertex(x+35,y+24,0);vertex(x+118,y+24,0);vertex(x+125,y+80,0);vertex(x+38,y+80,0);glEnd();
     }
-    for(int i=0;i<9;i++){float x=width/2-162.f+i*36,y=height-45.f;glColor3f(i==selected?1:.15f,i==selected?1:.15f,i==selected?1:.15f);glBegin(GL_QUADS);vertex(x,y,0);vertex(x+34,y,0);vertex(x+34,y+34,0);vertex(x,y+34,0);glEnd();color(hotbar[i],3);glBegin(GL_QUADS);vertex(x+4,y+4,0);vertex(x+30,y+4,0);vertex(x+30,y+30,0);vertex(x+4,y+30,0);glEnd();}SwapBuffers(dc);
+    if(limited(player)){
+        for(int i=0;i<20;i++){
+            float x=width/2-162.f+i*8,y=height-64.f;glColor3f(i<player.health?.85f:.20f,.08f,.08f);glBegin(GL_QUADS);box2(x,y,6,9);glEnd();
+            x=width/2+4.f+i*8;glColor3f(i<player.hunger?.93f:.20f,i<player.hunger?.64f:.18f,.12f);glBegin(GL_QUADS);box2(x,y,6,9);glEnd();
+        }
+    }
+    for(int i=0;i<9;i++){float x=width/2-162.f+i*36,y=height-45.f;glColor3f(i==selected?1:.15f,i==selected?1:.15f,i==selected?1:.15f);glBegin(GL_QUADS);vertex(x,y,0);vertex(x+34,y,0);vertex(x+34,y+34,0);vertex(x,y+34,0);glEnd();color(hotbar[i],3);glBegin(GL_QUADS);vertex(x+4,y+4,0);vertex(x+30,y+4,0);vertex(x+30,y+30,0);vertex(x+4,y+30,0);glEnd();if(limited(player))draw_number(player.blocks[hotbar[i]],x+5,y+20);}SwapBuffers(dc);
 }
 int WINAPI WinMain(HINSTANCE instance,HINSTANCE,LPSTR,int show){SetProcessDPIAware();
     MenuResult menu=open_start_menu(instance);if(!menu.start)return 0;
-    SEED=menu.seed;graphics=menu.graphics;skin=menu.skin;savepath=menu.save_path;world_name=menu.world_name;
+    SEED=menu.seed;graphics=menu.graphics;skin=menu.skin;savepath=menu.save_path;world_name=menu.world_name;player.mode=menu.mode;
     if(!load_world()){MessageBoxW(nullptr,L"The selected world is incomplete or damaged and was not modified.",L"Unable to open world",MB_OK|MB_ICONERROR);return 1;}
-    py=vc_terrain_height(8,8,SEED)+10;
+    if(player.has_position){px=player.x;py=player.y;pz=player.z;}else spawn_player();selected=player.selected;
     WNDCLASSW wc={};wc.style=CS_OWNDC;wc.lpfnWndProc=proc;wc.hInstance=instance;wc.lpszClassName=L"RustcraftRedefinedWindow";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);if(!RegisterClassW(&wc))return 1;window=CreateWindowW(wc.lpszClassName,L"Rustcraft Redefined",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1024,720,nullptr,nullptr,instance,nullptr);if(!window)return 1;dc=GetDC(window);PIXELFORMATDESCRIPTOR pfd={};pfd.nSize=sizeof(pfd);pfd.nVersion=1;pfd.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER;pfd.iPixelType=PFD_TYPE_RGBA;pfd.cColorBits=32;pfd.cDepthBits=24;int pf=ChoosePixelFormat(dc,&pfd);if(!pf||!SetPixelFormat(dc,pf,&pfd))return 1;context=wglCreateContext(dc);if(!context||!wglMakeCurrent(dc,context))return 1;ShowWindow(window,show);make_textures();LARGE_INTEGER freq,prev;QueryPerformanceFrequency(&freq);QueryPerformanceCounter(&prev);double now=0,title=0;int frames=0;
-    while(running){MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){if(msg.message==WM_QUIT)running=false;TranslateMessage(&msg);DispatchMessageW(&msg);}LARGE_INTEGER t;QueryPerformanceCounter(&t);double dt=(double)(t.QuadPart-prev.QuadPart)/freq.QuadPart;prev=t;double elapsed=dt;if(dt>.05)dt=.05;now+=elapsed;stream();input(dt,now);render();frames++;title+=elapsed;if(title>=1){wchar_t text[256];swprintf(text,256,L"Rustcraft Redefined | %ls | FPS %d | %.1f %.1f %.1f | seed %llu | %ls | %ls",world_name.c_str(),(int)(frames/title),px,py,pz,(unsigned long long)SEED,fly?L"Fly":L"Walk",presets[graphics].name);SetWindowTextW(window,text);title=0;frames=0;}Sleep(1);}
+    while(running){MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){if(msg.message==WM_QUIT)running=false;TranslateMessage(&msg);DispatchMessageW(&msg);}LARGE_INTEGER t;QueryPerformanceCounter(&t);double dt=(double)(t.QuadPart-prev.QuadPart)/freq.QuadPart;prev=t;double elapsed=dt;if(dt>.05)dt=.05;now+=elapsed;stream();input(dt,now);render();frames++;title+=elapsed;if(title>=1){wchar_t text[256];swprintf(text,256,L"Rustcraft Redefined | %ls | %ls | HP %u Food %u Berries %u Slot %u | FPS %d | %.1f %.1f %.1f | seed %llu | %ls",world_name.c_str(),player.mode==CREATIVE?L"Creative":(player.mode==SURVIVAL?L"Survival":L"Hardcore"),(unsigned)player.health,(unsigned)player.hunger,(unsigned)player.berries,(unsigned)(limited(player)?player.blocks[hotbar[selected]]:0),(int)(frames/title),px,py,pz,(unsigned long long)SEED,presets[graphics].name);SetWindowTextW(window,text);title=0;frames=0;}Sleep(1);}
     if(captured)capture(false);save_with_warning();menu.graphics=graphics;save_preferences(menu);for(auto c:chunks){glDeleteLists(c->opaque,1);glDeleteLists(c->trans,1);delete c;}glDeleteTextures(15,textures);wglMakeCurrent(nullptr,nullptr);wglDeleteContext(context);ReleaseDC(window,dc);DestroyWindow(window);return 0;
 }

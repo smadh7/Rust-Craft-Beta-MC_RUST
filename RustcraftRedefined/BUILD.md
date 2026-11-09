@@ -22,3 +22,10 @@ For name, seed and world-header validation tests:
     ./world-menu-test
 
 The Win32 startup menu, save migration, actual graphics and user input still require testing on Windows.
+
+For gameplay and save-format tests (assertions must remain enabled):
+
+    g++ -O3 -ffast-math -std=c++17 tests/gameplay_test.cpp -o gameplay-test
+    ./gameplay-test
+
+The game modes, damage, persistence, menu, and migration need end-to-end Windows testing; native unit tests do not establish parity or gameplay correctness.
