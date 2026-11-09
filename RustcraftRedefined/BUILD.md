@@ -15,3 +15,10 @@ For the independent camera, raycast and placement tests:
     ./interaction-test
 
 These native tests do not replace Windows, graphics-driver, input or gameplay testing.
+
+For name, seed and world-header validation tests:
+
+    g++ -O2 -std=c++17 tests/world_menu_test.cpp -o world-menu-test
+    ./world-menu-test
+
+The Win32 startup menu, save migration, actual graphics and user input still require testing on Windows.

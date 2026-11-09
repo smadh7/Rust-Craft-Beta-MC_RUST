@@ -12,14 +12,17 @@
 #include <string>
 #include <algorithm>
 #include "interaction.h"
+#include "menu.h"
 
 extern "C" void vc_generate_chunk(int32_t,int32_t,uint64_t,uint8_t*);
+extern "C" int32_t vc_terrain_height(int32_t,int32_t,uint64_t);
 extern "C" uint32_t vc_mesh_chunk(const uint8_t*,uint32_t*,uint32_t);
-static const uint64_t SEED=12345;
+static uint64_t SEED=12345;
 // Presets trade view distance and atmosphere for speed; no external shaders.
 struct Preset { const wchar_t* name; int radius; bool gradient, clouds; };
 static const Preset presets[]={{L"Potato / Basic",2,false,false},{L"Normal",3,true,false},{L"High",4,true,true},{L"Very High / Peak",5,true,true}};
-static int graphics=1;
+static int graphics=1,skin=0;
+static std::wstring world_name;
 struct Pos { int x,y,z; bool operator==(const Pos& b)const{return x==b.x&&y==b.y&&z==b.z;} };
 struct PosHash { size_t operator()(const Pos&p) const { return ((uint64_t)(uint32_t)p.x*0x9e3779b1u)^((uint64_t)(uint32_t)p.z*0x85ebca77u)^((uint64_t)(uint32_t)p.y*0xc2b2ae3du); } };
 static std::unordered_map<Pos,uint8_t,PosHash> edits;
@@ -100,15 +103,26 @@ static void stream(){int cx=div16((int)floor(px)),cz=div16((int)floor(pz));int r
     for(size_t i=0;i<chunks.size();) {Chunk*c=chunks[i]; if(abs(c->x-cx)>radius+1||abs(c->z-cz)>radius+1){glDeleteLists(c->opaque,1);glDeleteLists(c->trans,1);delete c;chunks.erase(chunks.begin()+i);} else i++;}
     for(int r=0;r<=radius;r++)for(int z=-r;z<=r;z++)for(int x=-r;x<=r;x++){ if(abs(x)!=r&&abs(z)!=r)continue; if(!findchunk(cx+x,cz+z)){Chunk*c=new Chunk; c->x=cx+x;c->z=cz+z;populate(c->x,c->z,c->b);chunks.push_back(c); remesh(c);return;} }
 }
-static void init_save(){wchar_t base[32768];DWORD n=GetEnvironmentVariableW(L"APPDATA",base,32768); if(!n||n>=32768){n=GetEnvironmentVariableW(L"USERPROFILE",base,32768);if(!n||n>=32768)return;}
-    std::wstring dir=std::wstring(base)+L"\\Rustcraft Redefined";if(!CreateDirectoryW(dir.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return;savepath=dir+L"\\world.bin";
-    FILE*f=_wfopen(savepath.c_str(),L"rb");if(!f)return; char magic[8];uint64_t seed;uint32_t count;
-    if(fread(magic,1,8,f)==8&&!memcmp(magic,"RCRSAVE1",8)&&fread(&seed,8,1,f)==1&&seed==SEED&&fread(&count,4,1,f)==1&&count<=1000000){for(uint32_t i=0;i<count;i++){int32_t v[3];uint8_t b;if(fread(v,4,3,f)!=3||fread(&b,1,1,f)!=1)break;if(v[1]>=0&&v[1]<64&&b<=13)edits[{v[0],v[1],v[2]}]=b;}}fclose(f);
+// Refuse damaged or incomplete files instead of overwriting them on exit.
+static bool load_world(){
+    if(savepath.empty())return true;
+    FILE*f=_wfopen(savepath.c_str(),L"rb");if(!f)return false;
+    char magic[8];uint64_t seed;uint32_t count;bool ok=fread(magic,1,8,f)==8&&!memcmp(magic,"RCRSAVE1",8)&&fread(&seed,8,1,f)==1&&seed==SEED&&fread(&count,4,1,f)==1&&count<=1000000;
+    std::unordered_map<Pos,uint8_t,PosHash> loaded;
+    if(ok)for(uint32_t i=0;i<count;i++){int32_t v[3];uint8_t b;if(fread(v,4,3,f)!=3||fread(&b,1,1,f)!=1||v[1]<0||v[1]>=64||b>13){ok=false;break;}loaded[{v[0],v[1],v[2]}]=b;}
+    if(ok&&fgetc(f)!=EOF)ok=false;if(ferror(f))ok=false;fclose(f);
+    if(ok)edits.swap(loaded);return ok;
 }
-static void save(){if(savepath.empty())return; std::wstring tmp=savepath+L".tmp";FILE*f=_wfopen(tmp.c_str(),L"wb");if(!f)return;uint32_t count=(uint32_t)edits.size();bool ok=fwrite("RCRSAVE1",1,8,f)==8&&fwrite(&SEED,8,1,f)==1&&fwrite(&count,4,1,f)==1;
-    for(const auto&e:edits){int32_t v[3]={e.first.x,e.first.y,e.first.z};ok=ok&&fwrite(v,4,3,f)==3&&fwrite(&e.second,1,1,f)==1;} if(fclose(f)!=0)ok=false;if(ok)MoveFileExW(tmp.c_str(),savepath.c_str(),MOVEFILE_REPLACE_EXISTING);else DeleteFileW(tmp.c_str());
+static bool save(){
+    if(savepath.empty())return true;
+    if(edits.size()>1000000)return false;
+    std::wstring tmp=savepath+L".tmp";FILE*f=_wfopen(tmp.c_str(),L"wb");if(!f)return false;uint32_t count=(uint32_t)edits.size();bool ok=fwrite("RCRSAVE1",1,8,f)==8&&fwrite(&SEED,8,1,f)==1&&fwrite(&count,4,1,f)==1;
+    for(const auto&e:edits){int32_t v[3]={e.first.x,e.first.y,e.first.z};ok=ok&&fwrite(v,4,3,f)==3&&fwrite(&e.second,1,1,f)==1;}
+    if(fclose(f)!=0)ok=false;if(!ok){DeleteFileW(tmp.c_str());return false;}
+    return MoveFileExW(tmp.c_str(),savepath.c_str(),MOVEFILE_REPLACE_EXISTING)!=0;
 }
-static void setblock(int x,int y,int z,uint8_t id){if(y<=0||y>=64)return;Chunk*c=findchunk(div16(x),div16(z));if(!c)return;c->b[idx(local16(x),y,local16(z))]=id;edits[{x,y,z}]=id;remesh(c); if(local16(x)==0){Chunk*n=findchunk(c->x-1,c->z);if(n)remesh(n);} if(local16(x)==15){Chunk*n=findchunk(c->x+1,c->z);if(n)remesh(n);} if(local16(z)==0){Chunk*n=findchunk(c->x,c->z-1);if(n)remesh(n);} if(local16(z)==15){Chunk*n=findchunk(c->x,c->z+1);if(n)remesh(n);}save();}
+static void save_with_warning(){static bool warned=false;if(!save()&&!warned){warned=true;MessageBoxW(window,L"The world could not be saved. Your latest edits may be lost. Check that your user data folder is writable.",L"Save error",MB_OK|MB_ICONWARNING);}}
+static void setblock(int x,int y,int z,uint8_t id){if(y<=0||y>=64)return;Chunk*c=findchunk(div16(x),div16(z));if(!c)return;c->b[idx(local16(x),y,local16(z))]=id;edits[{x,y,z}]=id;remesh(c); if(local16(x)==0){Chunk*n=findchunk(c->x-1,c->z);if(n)remesh(n);} if(local16(x)==15){Chunk*n=findchunk(c->x+1,c->z);if(n)remesh(n);} if(local16(z)==0){Chunk*n=findchunk(c->x,c->z-1);if(n)remesh(n);} if(local16(z)==15){Chunk*n=findchunk(c->x,c->z+1);if(n)remesh(n);}save_with_warning();}
 static bool collides(double x,double y,double z){for(int X=(int)floor(x-.3);X<=(int)floor(x+.3);X++)for(int Y=(int)floor(y);Y<=(int)floor(y+1.79);Y++)for(int Z=(int)floor(z-.3);Z<=(int)floor(z+.3);Z++)if((Y>=0&&Y<64&&!findchunk(div16(X),div16(Z)))||solid(block(X,Y,Z)))return true;return false;}
 static RayHit ray(){return trace_ray(px,py+1.62,pz,view_direction(yaw,pitch),6.0,[](int x,int y,int z){return block(x,y,z);});}
 static void capture(bool on){captured=on; if(on){SetCapture(window);RECT r;GetClientRect(window,&r);POINT p={(r.right-r.left)/2,(r.bottom-r.top)/2};ClientToScreen(window,&p);SetCursorPos(p.x,p.y);while(ShowCursor(FALSE)>=0){} }else{ReleaseCapture();while(ShowCursor(TRUE)<0){}}}
@@ -174,9 +188,21 @@ static void render(){
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);for(auto c:ordered){glPushMatrix();glTranslatef((float)(c->x*16),0,(float)(c->z*16));glCallList(c->trans);glPopMatrix();}glDepthMask(GL_TRUE);glDisable(GL_BLEND);glDisable(GL_TEXTURE_2D);
     RayHit h=ray();if(h.yes){glDisable(GL_FOG);glColor3f(0,0,0);float x=(float)h.x-.003f,y=(float)h.y-.003f,z=(float)h.z-.003f,s=1.006f;glBegin(GL_LINES);for(int a=0;a<2;a++)for(int b=0;b<2;b++){vertex(x,y+a*s,z+b*s);vertex(x+s,y+a*s,z+b*s);vertex(x+a*s,y,z+b*s);vertex(x+a*s,y+s,z+b*s);vertex(x+a*s,y+b*s,z);vertex(x+a*s,y+b*s,z+s);}glEnd();}
     glDisable(GL_FOG);glDisable(GL_DEPTH_TEST);glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,width,height,0,-1,1);glMatrixMode(GL_MODELVIEW);glLoadIdentity();glColor3f(1,1,1);glBegin(GL_LINES);vertex(width/2-7,height/2,0);vertex(width/2+7,height/2,0);vertex(width/2,height/2-7,0);vertex(width/2,height/2+7,0);glEnd();
+    // A simple first-person arm makes the chosen skin visible without a player model.
+    if(width>=700&&height>=450){
+        static const float hands[4][3]={{.76f,.51f,.37f},{.37f,.23f,.17f},{.93f,.73f,.58f},{.66f,.56f,.49f}};
+        static const float sleeves[4][3]={{.20f,.41f,.48f},{.43f,.31f,.20f},{.30f,.43f,.30f},{.31f,.29f,.48f}};
+        float x=(float)width-145,y=(float)height-150;glColor3fv(sleeves[skin]);glBegin(GL_QUADS);vertex(x+38,y+75,0);vertex(x+125,y+75,0);vertex(x+145,y+150,0);vertex(x+38,y+150,0);glEnd();
+        glColor3fv(hands[skin]);glBegin(GL_QUADS);vertex(x+35,y+24,0);vertex(x+118,y+24,0);vertex(x+125,y+80,0);vertex(x+38,y+80,0);glEnd();
+    }
     for(int i=0;i<9;i++){float x=width/2-162.f+i*36,y=height-45.f;glColor3f(i==selected?1:.15f,i==selected?1:.15f,i==selected?1:.15f);glBegin(GL_QUADS);vertex(x,y,0);vertex(x+34,y,0);vertex(x+34,y+34,0);vertex(x,y+34,0);glEnd();color(hotbar[i],3);glBegin(GL_QUADS);vertex(x+4,y+4,0);vertex(x+30,y+4,0);vertex(x+30,y+30,0);vertex(x+4,y+30,0);glEnd();}SwapBuffers(dc);
 }
-int WINAPI WinMain(HINSTANCE instance,HINSTANCE,LPSTR,int show){SetProcessDPIAware();WNDCLASSW wc={};wc.style=CS_OWNDC;wc.lpfnWndProc=proc;wc.hInstance=instance;wc.lpszClassName=L"RustcraftRedefinedWindow";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);if(!RegisterClassW(&wc))return 1;window=CreateWindowW(wc.lpszClassName,L"Rustcraft Redefined",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1024,720,nullptr,nullptr,instance,nullptr);if(!window)return 1;dc=GetDC(window);PIXELFORMATDESCRIPTOR pfd={};pfd.nSize=sizeof(pfd);pfd.nVersion=1;pfd.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER;pfd.iPixelType=PFD_TYPE_RGBA;pfd.cColorBits=32;pfd.cDepthBits=24;int pf=ChoosePixelFormat(dc,&pfd);if(!pf||!SetPixelFormat(dc,pf,&pfd))return 1;context=wglCreateContext(dc);if(!context||!wglMakeCurrent(dc,context))return 1;ShowWindow(window,show);make_textures();init_save();LARGE_INTEGER freq,prev;QueryPerformanceFrequency(&freq);QueryPerformanceCounter(&prev);double now=0,title=0;int frames=0;
-    while(running){MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){if(msg.message==WM_QUIT)running=false;TranslateMessage(&msg);DispatchMessageW(&msg);}LARGE_INTEGER t;QueryPerformanceCounter(&t);double dt=(double)(t.QuadPart-prev.QuadPart)/freq.QuadPart;prev=t;double elapsed=dt;if(dt>.05)dt=.05;now+=elapsed;stream();input(dt,now);render();frames++;title+=elapsed;if(title>=1){wchar_t text[256];swprintf(text,256,L"Rustcraft Redefined | FPS %d | %.1f %.1f %.1f | seed 12345 | %ls | %ls",(int)(frames/title),px,py,pz,fly?L"Fly":L"Walk",presets[graphics].name);SetWindowTextW(window,text);title=0;frames=0;}Sleep(1);}
-    if(captured)capture(false);save();for(auto c:chunks){glDeleteLists(c->opaque,1);glDeleteLists(c->trans,1);delete c;}glDeleteTextures(15,textures);wglMakeCurrent(nullptr,nullptr);wglDeleteContext(context);ReleaseDC(window,dc);DestroyWindow(window);return 0;
+int WINAPI WinMain(HINSTANCE instance,HINSTANCE,LPSTR,int show){SetProcessDPIAware();
+    MenuResult menu=open_start_menu(instance);if(!menu.start)return 0;
+    SEED=menu.seed;graphics=menu.graphics;skin=menu.skin;savepath=menu.save_path;world_name=menu.world_name;
+    if(!load_world()){MessageBoxW(nullptr,L"The selected world is incomplete or damaged and was not modified.",L"Unable to open world",MB_OK|MB_ICONERROR);return 1;}
+    py=vc_terrain_height(8,8,SEED)+10;
+    WNDCLASSW wc={};wc.style=CS_OWNDC;wc.lpfnWndProc=proc;wc.hInstance=instance;wc.lpszClassName=L"RustcraftRedefinedWindow";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);if(!RegisterClassW(&wc))return 1;window=CreateWindowW(wc.lpszClassName,L"Rustcraft Redefined",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1024,720,nullptr,nullptr,instance,nullptr);if(!window)return 1;dc=GetDC(window);PIXELFORMATDESCRIPTOR pfd={};pfd.nSize=sizeof(pfd);pfd.nVersion=1;pfd.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER;pfd.iPixelType=PFD_TYPE_RGBA;pfd.cColorBits=32;pfd.cDepthBits=24;int pf=ChoosePixelFormat(dc,&pfd);if(!pf||!SetPixelFormat(dc,pf,&pfd))return 1;context=wglCreateContext(dc);if(!context||!wglMakeCurrent(dc,context))return 1;ShowWindow(window,show);make_textures();LARGE_INTEGER freq,prev;QueryPerformanceFrequency(&freq);QueryPerformanceCounter(&prev);double now=0,title=0;int frames=0;
+    while(running){MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){if(msg.message==WM_QUIT)running=false;TranslateMessage(&msg);DispatchMessageW(&msg);}LARGE_INTEGER t;QueryPerformanceCounter(&t);double dt=(double)(t.QuadPart-prev.QuadPart)/freq.QuadPart;prev=t;double elapsed=dt;if(dt>.05)dt=.05;now+=elapsed;stream();input(dt,now);render();frames++;title+=elapsed;if(title>=1){wchar_t text[256];swprintf(text,256,L"Rustcraft Redefined | %ls | FPS %d | %.1f %.1f %.1f | seed %llu | %ls | %ls",world_name.c_str(),(int)(frames/title),px,py,pz,(unsigned long long)SEED,fly?L"Fly":L"Walk",presets[graphics].name);SetWindowTextW(window,text);title=0;frames=0;}Sleep(1);}
+    if(captured)capture(false);save_with_warning();menu.graphics=graphics;save_preferences(menu);for(auto c:chunks){glDeleteLists(c->opaque,1);glDeleteLists(c->trans,1);delete c;}glDeleteTextures(15,textures);wglMakeCurrent(nullptr,nullptr);wglDeleteContext(context);ReleaseDC(window,dc);DestroyWindow(window);return 0;
 }
