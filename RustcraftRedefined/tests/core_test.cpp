@@ -15,7 +15,12 @@ int main(){
     if(vc_mesh_chunk(p.data(),nullptr,0)!=10){puts("FAIL neighbour culling");return 1;}
     uint32_t guard[3]={0xdeadbeef,0xdeadbeef,0xdeadbeef};if(vc_mesh_chunk(p.data(),guard+1,1)!=10||guard[0]!=0xdeadbeef||guard[1]!=0xdeadbeef||guard[2]!=0xdeadbeef){puts("FAIL capacity guard");return 1;}
     puts("PASS deterministic generation, greedy cube, neighbour culling, output bounds");
-    using Clock=std::chrono::steady_clock;auto start=Clock::now();std::vector<uint8_t> chunks(256*16384);for(int i=0;i<256;i++)vc_generate_chunk(i%16,i/16,12345,&chunks[i*16384]);auto mid=Clock::now();uint64_t words=0;
+    using Clock=std::chrono::steady_clock;auto start=Clock::now();std::vector<uint8_t> chunks(256*16384);for(int i=0;i<256;i++)vc_generate_chunk(i%16,i/16,12345,&chunks[i*16384]);auto mid=Clock::now();
+    size_t sand=0, grass=0, logs=0, leaves=0;
+    for(uint8_t b:chunks){sand+=b==4;grass+=b==3;logs+=b==6;leaves+=b==7;}
+    if(!sand||!grass||!logs||!leaves){puts("FAIL expected terrain regions and trees");return 1;}
+    puts("PASS sandy and grassy regions with procedural trees");
+    uint64_t words=0;
     for(int i=0;i<256;i++){memset(p.data(),0,p.size());for(int y=0;y<64;y++)for(int z=0;z<16;z++)memcpy(&p[((y+1)*18+z+1)*18+1],&chunks[i*16384+(y*16+z)*16],16);words+=vc_mesh_chunk(p.data(),nullptr,0);}
     auto end=Clock::now();printf("256 chunks: generation %.2f ms; mesh sizing %.2f ms; %llu quads\n",std::chrono::duration<double,std::milli>(mid-start).count(),std::chrono::duration<double,std::milli>(end-mid).count(),(unsigned long long)(words/2));
 }
