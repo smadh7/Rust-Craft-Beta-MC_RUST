@@ -1,23 +1,29 @@
 [package]
 name = "rustcraft-redefined"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.70"
 build = "build.rs"
+description = "An unofficial, clean-room voxel sandbox written in Rust with a C++ native core."
+license = "MIT"
+publish = false
 
 [lib]
-name = "rustcraft_redefined"
+name = "rustcraft"
+path = "src/lib.rs"
 
 [[bin]]
 name = "RustcraftRedefined"
 path = "src/main.rs"
 
-[[bin]]
-name = "bench"
-path = "src/bin/bench.rs"
+# No third-party crates: the windowing, OpenGL, WebGL, NBT, zlib and region code are all in-tree.
+[dependencies]
+
+[profile.dev]
+opt-level = 1
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+codegen-units = 4
 panic = "abort"
 strip = true

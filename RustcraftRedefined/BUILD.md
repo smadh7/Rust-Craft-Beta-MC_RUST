@@ -1,47 +1,54 @@
-# Build and tests
+# Building
 
-The standalone prototype can be built offline with an already installed Zig toolchain containing its Windows GNU cross compiler and libraries. Run `./build-windows.sh` from this folder. It produces `RustcraftRedefined.exe` in the parent folder. Inspect the executable imports before distributing it; the current Zig build imports Universal C Runtime DLLs, which do not meet the original restricted import requirement. The toolchain itself is not included in this source folder.
+The project has no crate dependencies. You need:
 
-For a native C++ smoke test and benchmark, run:
+- Rust 1.70 or newer (`cargo`)
+- A C++17 compiler for the native core — any one of: Visual Studio Build Tools, clang, GCC,
+  MinGW-w64, or Zig. `build.rs` finds it automatically; set `CXX` to choose one.
 
-    g++ -O3 -ffast-math -fno-exceptions -fno-rtti -DNDEBUG -std=c++17 cpp/vccore.cpp tests/core_test.cpp -o core-test
-    ./core-test
+## Windows
 
-The separate, unused Rust foundation can be tested with an already installed Rust and C++ toolchain using `cargo test --offline` and `cargo run --offline --release --bin bench`. No third-party Rust crates are required. The Rust binary is a placeholder and is not the C++ client.
+```
+cd RustcraftRedefined
+cargo build --release
+target\release\RustcraftRedefined.exe
+```
 
-For the independent camera, raycast and placement tests:
+With the MSVC toolchain, `build.rs` uses `cl` (through `vcvarsall` if needed), `clang-cl`,
+`clang++`, `zig c++` or `g++`, whichever it finds first.
 
-    g++ -O3 -std=c++17 tests/interaction_test.cpp -o interaction-test
-    ./interaction-test
+## Browser
 
-These native tests do not replace Windows, graphics-driver, input or gameplay testing.
+```
+rustup target add wasm32-unknown-unknown
+cd RustcraftRedefined
+tools/build-web.sh
+```
 
-For name, seed and world-header validation tests:
+The script needs a C++ compiler that can target `wasm32` (Zig or clang) and `python3`. It writes
+`web/rustcraft_wasm.js`, which embeds the WebAssembly module so `web/index.html` also works when
+opened directly from disk. To serve it instead: `python3 -m http.server --directory web`.
 
-    g++ -O2 -std=c++17 tests/world_menu_test.cpp -o world-menu-test
-    ./world-menu-test
+## Cross-compiling the Windows executable from Linux or macOS
 
-The Win32 startup menu, save migration, actual graphics and user input still require testing on Windows.
+```
+rustup target add x86_64-pc-windows-gnu
+tools/build-windows.sh
+```
 
-For gameplay and save-format tests (assertions must remain enabled):
+This needs a MinGW-w64 linker, or Zig: point `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER` at a
+wrapper that runs `zig cc -target x86_64-windows-gnu`. The executable committed at the repository
+root was produced this way and has not been run on Windows.
 
-    g++ -O3 -ffast-math -std=c++17 tests/gameplay_test.cpp -o gameplay-test
-    ./gameplay-test
+## Tests and tools
 
-The game modes, damage, persistence, menu, and migration need end-to-end Windows testing; native unit tests do not establish parity or gameplay correctness.
+```
+cargo test                                    # unit tests
+cargo run --release --example world_map -- 1 40 map    # top-down map and slice of seed 1
+cargo run --release --example texture_sheet -- textures.png
+node tools/shot.mjs out.png "newworld 1" "time set noon"   # headless screenshot (needs puppeteer-core)
+```
 
-For visual-effect math and water meshing tests (keep assertions enabled):
-
-    g++ -O3 -ffast-math -std=c++17 tests/visual_effects_test.cpp -o visual-effects-test
-    ./visual-effects-test
-    g++ -O3 -ffast-math -std=c++17 cpp/vccore.cpp tests/water_mesh_test.cpp -o water-mesh-test
-    ./water-mesh-test
-
-The animated surface, particles, profile transitions and mining overlay still need visual testing on Windows and representative GPUs.
-
-For indexed edit-store, save-record reconstruction, frustum safety and synthetic lookup benchmarks (assertions enabled):
-
-    g++ -O3 -ffast-math -std=c++17 tests/performance_test.cpp -o performance-test
-    ./performance-test
-
-The lookup timings are a synthetic CPU microbenchmark, not a measurement of frame rate or a comparison with another game. The inventory picker, save migration and culling must still be tested in the Windows client.
+Game data (logs, screenshots, later worlds) goes to `%APPDATA%\Rustcraft Redefined` on Windows,
+`$XDG_DATA_HOME/rustcraft-redefined` elsewhere, or `RUSTCRAFT_HOME` if set. The browser build
+uses IndexedDB.
